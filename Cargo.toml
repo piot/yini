@@ -2,6 +2,9 @@
 name = "yini"
 version = "0.1.0"
 edition = "2024"
+description = "extremely simple .ini file parser"
+license = "MIT"
+repository = "https://github.com/piot/yini"
 
 [dependencies]
 seq-map = "0.0.14"

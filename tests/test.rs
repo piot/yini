@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) Peter Bjorklund. All rights reserved. https://github.com/piot/yini
+ * Licensed under the MIT License. See LICENSE in the project root for license information.
+ */
+
 use yini::{Parser, Value};
 
 #[test]
