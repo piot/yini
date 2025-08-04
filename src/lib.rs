@@ -6,10 +6,23 @@
 use seq_map::SeqMap;
 
 #[derive(Debug, Clone)]
+pub enum ErrorKind {
+    ExpectedValueOnSameLine,
+    ExpectedNewlineAfterKeyValue,
+    UnterminatedBlock,
+    UnterminatedString,
+    InvalidUtf8InNumber,
+    InvalidFloatFormat(String),
+    InvalidIntegerFormat(String),
+    InvalidBooleanLiteral,
+    UnexpectedEndOfInput,
+}
+
+#[derive(Debug, Clone)]
 pub struct ParseError {
     pub line: usize,
     pub column: usize,
-    pub message: String,
+    pub kind: ErrorKind,
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +32,7 @@ pub enum Value {
     Num(f64),
     Bool(bool),
     Object(Object),
+    Array(Vec<Value>),
 }
 
 pub type Object = SeqMap<String, Value>;
@@ -34,7 +48,7 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     /// Create a new parser over the input string.
-    #[must_use] pub fn new(input: &'a str) -> Self {
+    #[must_use] pub const fn new(input: &'a str) -> Self {
         Parser {
             input: input.as_bytes(),
             pos: 0,
@@ -49,16 +63,26 @@ impl<'a> Parser<'a> {
         self.skip_ws_and_comments();
         while !self.is_eof() {
             let key = self.parse_key();
-            self.skip_ws_and_comments();
+            self.skip_horizontal_ws(); // Only skip spaces/tabs, not newlines
 
-            let val = if self.peek_byte() == Some(b'{') {
-                self.next_byte(); // consume '{'
-                Value::Object(self.parse_object())
-            } else {
-                self.parse_value()
-            };
+            // Check if we have a value on the same line
+            if self.peek_byte() == Some(b'\n') || self.is_eof() {
+                self.errors.push(ParseError {
+                    line: self.line,
+                    column: self.column,
+                    kind: ErrorKind::ExpectedValueOnSameLine,
+                });
+                // Skip to next line to continue parsing
+                if self.peek_byte() == Some(b'\n') {
+                    self.next_byte();
+                }
+                continue;
+            }
+
+            let val = self.parse_value();
 
             let _ = root.insert(key, val);
+            self.require_newline_or_eof();
             self.skip_ws_and_comments();
         }
         root
@@ -78,25 +102,83 @@ impl<'a> Parser<'a> {
                 return map;
             }
             let key = self.parse_key();
-            self.skip_ws_and_comments();
+            self.skip_horizontal_ws(); // Only skip spaces/tabs, not newlines
 
-            let val = if self.peek_byte() == Some(b'{') {
-                self.next_byte();
-                Value::Object(self.parse_object())
-            } else {
-                self.parse_value()
-            };
+            // Check if we have a value on the same line
+            if self.peek_byte() == Some(b'\n') || self.is_eof() {
+                self.errors.push(ParseError {
+                    line: self.line,
+                    column: self.column,
+                    kind: ErrorKind::ExpectedValueOnSameLine,
+                });
+                // Skip to next line to continue parsing
+                if self.peek_byte() == Some(b'\n') {
+                    self.next_byte();
+                }
+                continue;
+            }
+
+            let val = self.parse_value();
             let _ = map.insert(key, val);
+            self.require_newline_or_eof();
             self.skip_ws_and_comments();
         }
 
         self.errors.push(ParseError {
             line: self.line,
             column: self.column,
-            message: "Unterminated block, missing '}'".into(),
+            kind: ErrorKind::UnterminatedBlock,
         });
 
         map
+    }
+
+    fn parse_array(&mut self) -> Vec<Value> {
+        let mut array = Vec::new();
+        self.skip_ws_and_comments();
+
+        // Handle empty array
+        if self.peek_byte() == Some(b']') {
+            self.next_byte();
+            return array;
+        }
+
+        loop {
+            // Parse value
+            let val = self.parse_value();
+
+            array.push(val);
+            self.skip_ws_and_comments();
+
+            // Check for end of array
+            if self.peek_byte() == Some(b']') {
+                self.next_byte();
+                return array;
+            }
+
+            // Check for comma separator
+            if self.peek_byte() == Some(b',') {
+                self.next_byte();
+                self.skip_ws_and_comments();
+                // Allow trailing comma
+                if self.peek_byte() == Some(b']') {
+                    self.next_byte();
+                    return array;
+                }
+            } else {
+                // No comma, check if we're at the end
+                if self.peek_byte() == Some(b']') {
+                    self.next_byte();
+                    return array;
+                }
+                // Continue parsing without comma (space-separated)
+                self.skip_ws_and_comments();
+                if self.peek_byte() == Some(b']') {
+                    self.next_byte();
+                    return array;
+                }
+            }
+        }
     }
 
     fn parse_key(&mut self) -> String {
@@ -111,6 +193,14 @@ impl<'a> Parser<'a> {
                 let s = self.parse_string();
                 Value::Str(s)
             }
+            Some(b'{') => {
+                self.next_byte(); // consume '{'
+                Value::Object(self.parse_object())
+            }
+            Some(b'[') => {
+                self.next_byte(); // consume '['
+                Value::Array(self.parse_array())
+            }
             Some(b'-' | b'0'..=b'9') => self.parse_numeric(),
             Some(b't' | b'f') => Value::Bool(self.parse_boolean()),
             Some(_) => {
@@ -121,7 +211,7 @@ impl<'a> Parser<'a> {
                 self.errors.push(ParseError {
                     line: self.line,
                     column: self.column,
-                    message: "Unexpected end of input when expecting value".into(),
+                    kind: ErrorKind::UnexpectedEndOfInput,
                 });
                 Value::Str(String::new())
             }
@@ -136,7 +226,7 @@ impl<'a> Parser<'a> {
             let start = self.pos;
             while let Some(&b) = self.input.get(self.pos) {
                 let c = b as char;
-                if c.is_whitespace() || c == '{' || c == '}' {
+                if c.is_whitespace() || c == '{' || c == '}' || c == '[' || c == ']' || c == ',' {
                     break;
                 }
                 self.advance_byte(b);
@@ -170,7 +260,7 @@ impl<'a> Parser<'a> {
         self.errors.push(ParseError {
             line: self.line,
             column: self.column,
-            message: "Unterminated string literal".into(),
+            kind: ErrorKind::UnterminatedString,
         });
         String::from_utf8_lossy(&raw).into_owned()
     }
@@ -178,7 +268,7 @@ impl<'a> Parser<'a> {
     fn parse_numeric(&mut self) -> Value {
         let start = self.pos;
         // optional sign
-        if let Some(b'-') = self.peek_byte() {
+        if self.peek_byte() == Some(b'-') {
             self.advance_byte(b'-');
         }
         // digits before decimal
@@ -208,7 +298,7 @@ impl<'a> Parser<'a> {
                         self.errors.push(ParseError {
                                  line: self.line,
                                  column: self.column,
-                                 message: "Invalid UTF-8 in number literal".into(),
+                                 kind: ErrorKind::InvalidUtf8InNumber,
                              });
                          return Value::Int(0);
                     };
@@ -217,7 +307,7 @@ impl<'a> Parser<'a> {
                 self.errors.push(ParseError {
                     line: self.line,
                     column: self.column,
-                    message: format!("Invalid float format: {s}"),
+                    kind: ErrorKind::InvalidFloatFormat(s.to_string()),
                 });
                 Value::Num(0.0)
             }
@@ -225,7 +315,7 @@ impl<'a> Parser<'a> {
             self.errors.push(ParseError {
                 line: self.line,
                 column: self.column,
-                message: format!("Invalid integer format: {s}"),
+                kind: ErrorKind::InvalidIntegerFormat(s.to_string()),
             });
             Value::Int(0)
         }
@@ -250,7 +340,7 @@ impl<'a> Parser<'a> {
             self.errors.push(ParseError {
                 line: self.line,
                 column: self.column,
-                message: "Invalid boolean literal".into(),
+                kind: ErrorKind::InvalidBooleanLiteral,
             });
             false
         }
@@ -265,18 +355,6 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
-            if self
-                .input
-                .get(self.pos..)
-                .is_some_and(|s| s.starts_with(b"//"))
-            {
-                while let Some(b) = self.next_byte() {
-                    if b == b'\n' {
-                        break;
-                    }
-                }
-                continue;
-            }
             if self.peek_byte() == Some(b'#') {
                 self.advance_byte(b'#');
                 while let Some(b) = self.next_byte() {
@@ -288,6 +366,38 @@ impl<'a> Parser<'a> {
             }
             break;
         }
+    }
+
+    fn skip_horizontal_ws(&mut self) {
+        while let Some(&b) = self.input.get(self.pos) {
+            if b == b' ' || b == b'\t' {
+                self.advance_byte(b);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn require_newline_or_eof(&mut self) {
+        self.skip_horizontal_ws();
+
+        if self.is_eof() {
+            return;
+        }
+
+        if self.peek_byte() == Some(b'\n') {
+            return;
+        }
+
+        if self.peek_byte() == Some(b'#') {
+            return;
+        }
+
+        self.errors.push(ParseError {
+            line: self.line,
+            column: self.column,
+            kind: ErrorKind::ExpectedNewlineAfterKeyValue,
+        });
     }
 
     fn peek_byte(&self) -> Option<u8> {
@@ -302,7 +412,7 @@ impl<'a> Parser<'a> {
         b
     }
 
-    fn advance_byte(&mut self, b: u8) {
+    const fn advance_byte(&mut self, b: u8) {
         self.pos += 1;
         if b == b'\n' {
             self.line += 1;
@@ -320,14 +430,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn is_eof(&self) -> bool {
+    const fn is_eof(&self) -> bool {
         self.pos >= self.input.len()
     }
 }
 
 impl Value {
-    #[must_use] pub fn as_object(&self) -> Option<&Object> {
-        if let Value::Object(o) = self {
+    #[must_use] pub const fn as_object(&self) -> Option<&Object> {
+        if let Self::Object(o) = self {
             Some(o)
         } else {
             None
@@ -335,28 +445,36 @@ impl Value {
     }
 
     #[must_use] pub fn as_str(&self) -> Option<&str> {
-        if let Value::Str(s) = self {
+        if let Self::Str(s) = self {
             Some(s)
         } else {
             None
         }
     }
 
-    #[must_use] pub fn as_num(&self) -> Option<f64> {
-        if let Value::Num(n) = *self {
+    #[must_use] pub const fn as_num(&self) -> Option<f64> {
+        if let Self::Num(n) = *self {
             Some(n)
         } else {
             None
         }
     }
 
-    #[must_use] pub fn as_int(&self) -> Option<i64> {
-        if let Value::Int(i) = *self { Some(i) } else { None }
+    #[must_use] pub const fn as_int(&self) -> Option<i64> {
+        if let Self::Int(i) = *self { Some(i) } else { None }
     }
 
-    #[must_use] pub fn as_bool(&self) -> Option<bool> {
-        if let Value::Bool(b) = *self {
+    #[must_use] pub const fn as_bool(&self) -> Option<bool> {
+        if let Self::Bool(b) = *self {
             Some(b)
+        } else {
+            None
+        }
+    }
+
+    #[must_use] pub const fn as_array(&self) -> Option<&Vec<Self>> {
+        if let Self::Array(a) = self {
+            Some(a)
         } else {
             None
         }
