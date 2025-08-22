@@ -3,17 +3,17 @@
  * Licensed under the MIT License. See LICENSE in the project root for license information.
  */
 
-use yini::{Parser, Value, ErrorKind};
+use yini::{ErrorKind, Parser, Value};
 
 #[test]
 fn parse_sample() {
     let data = r#"
             # comment line
-            key1 -42
-            "key2" 100
-            key3 3.14
-            key4 -0.5
-            key5 "string"
+            key1: -42
+            "key2": 100
+            key3: 3.14
+            key4: -0.5
+            key5: "string"
         "#;
 
     let mut parser = Parser::new(data);
@@ -33,22 +33,22 @@ fn parse_sample() {
 #[test]
 fn booleans() {
     let data = r"
-            tflag true
-            fflag false
+            tflag: true
+            fflag: false
         ";
     let mut parser = Parser::new(data);
     let map = parser.parse();
     assert!(parser.errors().is_empty());
-        assert_eq!(map.get("tflag").and_then(Value::as_bool), Some(true));
-        assert_eq!(map.get("fflag").and_then(Value::as_bool), Some(false));
+    assert_eq!(map.get("tflag").and_then(Value::as_bool), Some(true));
+    assert_eq!(map.get("fflag").and_then(Value::as_bool), Some(false));
 }
 
 #[test]
 fn object() {
     let data = r"
-            Parent {
-                child1 1
-                child2 2
+            Parent: {
+                child1: 1
+                child2: 2
             }
         ";
     let mut parser = Parser::new(data);
@@ -65,9 +65,9 @@ fn object() {
 #[test]
 fn parse_two_nested() {
     let data = r"
-            level1 {
-                Level2 {
-                    key 42
+            level1: {
+                Level2: {
+                    key: 42
                 }
             }
         ";
@@ -94,9 +94,9 @@ fn parse_two_nested() {
 fn comments() {
     let data = r"
             # full line comment
-            a 10 # inline comment
+            a: 10 # inline comment
             # another comment
-            b 20
+            b: 20
         ";
     let mut parser = Parser::new(data);
     let map = parser.parse();
@@ -108,13 +108,17 @@ fn comments() {
 #[test]
 fn flat_array() {
     let data = r#"
-            numbers [1, 2, 3, 4, 5]
-            mixed ["hello", 42, true, 3.14]
-            spaced [This Is "A list" 23]
+            numbers: [1, 2, 3, 4, 5]
+            mixed: ["hello", 42, true, 3.14]
+            spaced: [This, Is, "A list", 23]
         "#;
     let mut parser = Parser::new(data);
     let map = parser.parse();
-    assert!(parser.errors().is_empty(), "Parse errors: {:?}", parser.errors());
+    assert!(
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
+    );
 
     if let Some(Value::Array(numbers)) = map.get("numbers") {
         assert_eq!(numbers.len(), 5);
@@ -146,30 +150,82 @@ fn flat_array() {
 }
 
 #[test]
+fn array_with_tuples() {
+    let data = r#"
+            pairs: [
+                "key1" "value",
+                "another" "another_value",
+                "mixed" 42,
+            ]
+        "#;
+    let mut parser = Parser::new(data);
+    let map = parser.parse();
+    assert!(
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
+    );
+
+    if let Some(Value::Array(pairs)) = map.get("pairs") {
+        assert_eq!(pairs.len(), 3);
+
+        if let Some(items) = pairs[0].as_tuple() {
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].as_str(), Some("key1"));
+            assert_eq!(items[1].as_str(), Some("value"));
+        } else {
+            panic!("First element not parsed as tuple");
+        }
+
+        if let Some(items) = pairs[1].as_tuple() {
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].as_str(), Some("another"));
+            assert_eq!(items[1].as_str(), Some("another_value"));
+        } else {
+            panic!("Second element not parsed as tuple");
+        }
+
+        if let Some(items) = pairs[2].as_tuple() {
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].as_str(), Some("mixed"));
+            assert_eq!(items[1].as_int(), Some(42));
+        } else {
+            panic!("Third element not parsed as tuple");
+        }
+    } else {
+        panic!("pairs not parsed as array");
+    }
+}
+
+#[test]
 fn array_with_objects() {
     let data = r#"
-            people [
+            people: [
                 {
-                    name "Alice"
-                    age 30
+                    name: "Alice"
+                    age: 30
                 },
                 {
-                    name "Bob"
-                    age 25
+                    name: "Bob"
+                    age: 25
                 }
             ]
-            mixed_array [
+            mixed_array: [
                 "simple string",
                 42,
                 {
-                    nested_key "nested_value"
-                    inner_array [1, 2, 3]
+                    nested_key: "nested_value"
+                    inner_array: [1, 2, 3]
                 }
             ]
         "#;
     let mut parser = Parser::new(data);
     let map = parser.parse();
-    assert!(parser.errors().is_empty(), "Parse errors: {:?}", parser.errors());
+    assert!(
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
+    );
 
     if let Some(Value::Array(people)) = map.get("people") {
         assert_eq!(people.len(), 2);
@@ -197,7 +253,10 @@ fn array_with_objects() {
         assert_eq!(mixed[1].as_int(), Some(42));
 
         if let Some(nested) = mixed[2].as_object() {
-            assert_eq!(nested.get("nested_key").and_then(Value::as_str), Some("nested_value"));
+            assert_eq!(
+                nested.get("nested_key").and_then(Value::as_str),
+                Some("nested_value")
+            );
             if let Some(Value::Array(inner)) = nested.get("inner_array") {
                 assert_eq!(inner.len(), 3);
                 assert_eq!(inner[0].as_int(), Some(1));
@@ -216,10 +275,10 @@ fn array_with_objects() {
 #[test]
 fn error_line_break_between_key_value() {
     let data = r#"
-            key1 42
-            key2
+            key1: 42
+            key2:
             "broken value"
-            key3 99
+            key3: 99
         "#;
     let mut parser = Parser::new(data);
     let _map = parser.parse();
@@ -227,45 +286,195 @@ fn error_line_break_between_key_value() {
 
     // Should have an error about missing value on same line
     let errors = parser.errors();
-    assert!(errors.iter().any(|e| matches!(e.kind, ErrorKind::ExpectedValueOnSameLine)));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, ErrorKind::ExpectedValueOnSameLine))
+    );
 }
 
 #[test]
 fn error_missing_newline_after_value() {
-    let data = r"key1 42 key2 99";
+    let data = r"key1: 42 key2: 99";
     let mut parser = Parser::new(data);
     let _map = parser.parse();
-    assert!(!parser.errors().is_empty(), "Should have parsing errors");
-
-    // Should have an error about expected newline
-    let errors = parser.errors();
-    assert!(errors.iter().any(|e| matches!(e.kind, ErrorKind::ExpectedNewlineAfterKeyValue)));
-}
-
-#[test]
-fn error_extra_content_after_value() {
-    let data = r"
-            key1 42 extra stuff
-            key2 99
-        ";
-    let mut parser = Parser::new(data);
-    let _map = parser.parse();
-    assert!(!parser.errors().is_empty(), "Should have parsing errors");
-
-    // Should have an error about expected newline
-    let errors = parser.errors();
-    assert!(errors.iter().any(|e| matches!(e.kind, ErrorKind::ExpectedNewlineAfterKeyValue)));
+    // Under the new rule, unquoted rest-of-line strings are allowed for object fields,
+    // so this should parse without errors.
+    assert!(
+        parser.errors().is_empty(),
+        "Should have no parsing errors: {:?}",
+        parser.errors()
+    );
 }
 
 #[test]
 fn valid_formatting_no_errors() {
     let data = r#"
-            key1 42
-            key2 "value with spaces"
-            key3 true # comment is OK
-            key4 3.14 # another comment style
+            key1: 42
+            key2: "value with spaces"
+            key3: true # comment is OK
+            key4: 3.14 # another comment style
         "#;
     let mut parser = Parser::new(data);
     let _map = parser.parse();
-    assert!(parser.errors().is_empty(), "Should have no parsing errors: {:?}", parser.errors());
+    assert!(
+        parser.errors().is_empty(),
+        "Should have no parsing errors: {:?}",
+        parser.errors()
+    );
+}
+
+#[test]
+fn error_missing_colon() {
+    let data = r#"
+            key1 42
+            key2: 99
+        "#;
+    let mut parser = Parser::new(data);
+    let _map = parser.parse();
+    assert!(!parser.errors().is_empty(), "Should have parsing errors");
+
+    // Should have an error about missing colon
+    let errors = parser.errors();
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, ErrorKind::ExpectedColonAfterKey)),
+        "Expected ExpectedColonAfterKey error, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn tuples_in_object_values() {
+    let data = r#"
+            pair: ("key", "value")
+            triple: ("a", "b", "c")
+            quad: (1, 2, 3, 4)
+            mixed: (Alice, 30, true)
+        "#;
+    let mut parser = Parser::new(data);
+    let map = parser.parse();
+
+    assert!(
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
+    );
+
+    // 2-tuple
+    if let Some(items) = map.get("pair").and_then(Value::as_tuple) {
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].as_str(), Some("key"));
+        assert_eq!(items[1].as_str(), Some("value"));
+    } else {
+        panic!("pair not parsed as 2-tuple");
+    }
+
+    // 3-tuple
+    if let Some(items) = map.get("triple").and_then(Value::as_tuple) {
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].as_str(), Some("a"));
+        assert_eq!(items[1].as_str(), Some("b"));
+        assert_eq!(items[2].as_str(), Some("c"));
+    } else {
+        panic!("triple not parsed as 3-tuple");
+    }
+
+    // 4-tuple
+    if let Some(items) = map.get("quad").and_then(Value::as_tuple) {
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0].as_int(), Some(1));
+        assert_eq!(items[1].as_int(), Some(2));
+        assert_eq!(items[2].as_int(), Some(3));
+        assert_eq!(items[3].as_int(), Some(4));
+    } else {
+        panic!("quad not parsed as 4-tuple");
+    }
+
+    // Mixed types
+    if let Some(items) = map.get("mixed").and_then(Value::as_tuple) {
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].as_str(), Some("Alice"));
+        assert_eq!(items[1].as_int(), Some(30));
+        assert_eq!(items[2].as_bool(), Some(true));
+    } else {
+        panic!("mixed not parsed as 3-tuple");
+    }
+}
+
+#[test]
+fn array_with_three_item_tuples() {
+    let data = r#"
+            triples: [
+                "a" "b" "c",
+                1 2 3,
+            ]
+        "#;
+    let mut parser = Parser::new(data);
+    let map = parser.parse();
+
+    assert!(
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
+    );
+
+    if let Some(Value::Array(triples)) = map.get("triples") {
+        assert_eq!(triples.len(), 2);
+
+        // First triple: "a" "b" "c"
+        if let Some(items) = triples[0].as_tuple() {
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0].as_str(), Some("a"));
+            assert_eq!(items[1].as_str(), Some("b"));
+            assert_eq!(items[2].as_str(), Some("c"));
+        } else {
+            panic!("First element not parsed as 3-tuple");
+        }
+
+        // Second triple: 1 2 3
+        if let Some(items) = triples[1].as_tuple() {
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0].as_int(), Some(1));
+            assert_eq!(items[1].as_int(), Some(2));
+            assert_eq!(items[2].as_int(), Some(3));
+        } else {
+            panic!("Second element not parsed as 3-tuple");
+        }
+    } else {
+        panic!("triples not parsed as array");
+    }
+}
+
+#[test]
+fn unquoted_strings() {
+    let data = r#"
+            description: this is a very long description
+            tuple: (this is a long description inside a tuple, another)
+        "#;
+
+    let mut parser = Parser::new(data);
+    let map = parser.parse();
+    assert!(
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
+    );
+
+    assert_eq!(
+        map.get("description").and_then(Value::as_str),
+        Some("this is a very long description")
+    );
+
+    if let Some(Value::Tuple(items)) = map.get("tuple") {
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].as_str(),
+            Some("this is a long description inside a tuple")
+        );
+        assert_eq!(items[1].as_str(), Some("another"));
+    } else {
+        panic!("tuple not parsed as tuple");
+    }
 }
