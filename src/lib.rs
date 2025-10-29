@@ -33,6 +33,7 @@ pub enum Value {
     Int(i64),
     Num(f64),
     Bool(bool),
+    Variant(String, Option<Box<Value>>),
     Object(Object),
     Array(Vec<Value>),
     Tuple(Vec<Value>),
@@ -69,8 +70,8 @@ impl<'a> Parser<'a> {
             self.skip_horizontal_ws();
 
             self.skip_horizontal_ws();
-            if self.peek_byte() == Some(b'{') {
-                // accept shorthand without colon
+            if self.peek_byte() == Some(b'{') || self.peek_byte() == Some(b'[') {
+                // accept shorthand without colon for objects and arrays
             } else if !self.consume_colon() {
                 self.skip_to_next_line();
                 continue;
@@ -119,8 +120,8 @@ impl<'a> Parser<'a> {
             self.skip_horizontal_ws();
 
             self.skip_horizontal_ws();
-            if self.peek_byte() == Some(b'{') {
-                // accept shorthand without colon
+            if self.peek_byte() == Some(b'{') || self.peek_byte() == Some(b'[') {
+                // accept shorthand without colon for objects and arrays
             } else if !self.consume_colon() {
                 self.skip_to_next_line();
                 continue;
@@ -274,6 +275,34 @@ impl<'a> Parser<'a> {
                 self.next_byte();
                 Value::Array(self.parse_array())
             }
+            Some(b':') => {
+                // Variant (like :Fullscreen, :north, etc.)
+                self.next_byte(); // consume ':'
+                let id = self.parse_variant_name();
+
+                // Check for optional payload: (tuple) {object} [array]
+                // Use horizontal whitespace only, don't consume newlines
+                self.skip_horizontal_ws();
+                let payload = match self.peek_byte() {
+                    Some(b'(') => {
+                        // Tuple payload: :variant (a, b, c)
+                        Some(Box::new(self.parse_tuple()))
+                    }
+                    Some(b'{') => {
+                        // Object payload: :variant {key: value}
+                        self.next_byte(); // consume '{'
+                        Some(Box::new(Value::Object(self.parse_object())))
+                    }
+                    Some(b'[') => {
+                        // Array payload: :variant [1, 2, 3]
+                        self.next_byte(); // consume '['
+                        Some(Box::new(Value::Array(self.parse_array())))
+                    }
+                    _ => None,
+                };
+
+                Value::Variant(id, payload)
+            }
             Some(b'-' | b'0'..=b'9') => self.parse_numeric(),
             Some(_) => {
                 let id = self.parse_identifier_or_string();
@@ -360,7 +389,7 @@ impl<'a> Parser<'a> {
             }
 
             let v = match self.peek_byte() {
-                Some(b'"' | b'{' | b'[' | b'(' | b'-' | b'0'..=b'9') => self.parse_value(),
+                Some(b'"' | b'{' | b'[' | b'(' | b'-' | b'0'..=b'9' | b':') => self.parse_value(),
                 Some(_) => {
                     // collect until comma, ')' or end-of-input/comment/newline
                     let start = self.pos;
@@ -458,6 +487,26 @@ impl<'a> Parser<'a> {
             }
             String::from_utf8_lossy(&self.input[start..self.pos]).into_owned()
         }
+    }
+
+    fn parse_variant_name(&mut self) -> String {
+        let start = self.pos;
+        while let Some(&b) = self.input.get(self.pos) {
+            let c = b as char;
+            if c.is_whitespace()
+                || c == '{'
+                || c == '}'
+                || c == '['
+                || c == ']'
+                || c == ','
+                || c == ')'
+                || c == ':'
+            {
+                break;
+            }
+            self.advance_byte(b);
+        }
+        String::from_utf8_lossy(&self.input[start..self.pos]).into_owned()
     }
 
     fn parse_string(&mut self) -> String {
@@ -707,6 +756,24 @@ impl Value {
     pub const fn as_array(&self) -> Option<&Vec<Self>> {
         if let Self::Array(a) = self {
             Some(a)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn as_variant(&self) -> Option<&str> {
+        if let Self::Variant(s, _) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn as_variant_with_payload(&self) -> Option<(&str, Option<&Self>)> {
+        if let Self::Variant(s, payload) = self {
+            Some((s, payload.as_ref().map(std::convert::AsRef::as_ref)))
         } else {
             None
         }

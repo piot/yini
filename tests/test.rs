@@ -66,7 +66,7 @@ fn object() {
 fn parse_two_nested() {
     let data = r"
             level1: {
-                Level2: {
+                Level2 { # intentionally without :
                     key: 42
                 }
             }
@@ -406,7 +406,7 @@ fn tuples_in_object_values() {
 #[test]
 fn array_with_three_item_tuples() {
     let data = r#"
-            triples: [
+            triples [ # intentionally without :
                 "a" "b" "c",
                 1 2 3,
             ]
@@ -476,5 +476,245 @@ fn unquoted_strings() {
         assert_eq!(items[1].as_str(), Some("another"));
     } else {
         panic!("tuple not parsed as tuple");
+    }
+}
+
+#[test]
+fn variants() {
+    let data = r#"
+            mode: :Fullscreen
+            window_mode: :Windowed
+            style: :Borderless
+            mixed: lowercase
+            lowercase_variant: :fullscreen
+            snake_case_variant: :window_mode
+            tuple_with_variant: (:Player, 100, :Active)
+            array_of_variants: [:North, :South, :East, :West]
+            mixed_case_array: [:fullscreen, :windowed, :borderless]
+        "#;
+
+    let mut parser = Parser::new(data);
+    let map = parser.parse();
+    assert!(
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
+    );
+
+    // Colon-prefixed identifiers = Variant (uppercase)
+    assert_eq!(
+        map.get("mode").and_then(Value::as_variant),
+        Some("Fullscreen")
+    );
+    assert_eq!(
+        map.get("window_mode").and_then(Value::as_variant),
+        Some("Windowed")
+    );
+    assert_eq!(
+        map.get("style").and_then(Value::as_variant),
+        Some("Borderless")
+    );
+
+    // Lowercase identifier without colon = Str
+    assert_eq!(map.get("mixed").and_then(Value::as_str), Some("lowercase"));
+
+    // Colon-prefixed identifiers = Variant (lowercase works too!)
+    assert_eq!(
+        map.get("lowercase_variant").and_then(Value::as_variant),
+        Some("fullscreen")
+    );
+    assert_eq!(
+        map.get("snake_case_variant").and_then(Value::as_variant),
+        Some("window_mode")
+    );
+
+    // Variants in tuples
+    if let Some(Value::Tuple(items)) = map.get("tuple_with_variant") {
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].as_variant(), Some("Player"));
+        assert_eq!(items[1].as_int(), Some(100));
+        assert_eq!(items[2].as_variant(), Some("Active"));
+    } else {
+        panic!("tuple_with_variant not parsed as tuple");
+    }
+
+    // Variants in arrays (uppercase)
+    if let Some(Value::Array(arr)) = map.get("array_of_variants") {
+        assert_eq!(arr.len(), 4);
+        assert_eq!(arr[0].as_variant(), Some("North"));
+        assert_eq!(arr[1].as_variant(), Some("South"));
+        assert_eq!(arr[2].as_variant(), Some("East"));
+        assert_eq!(arr[3].as_variant(), Some("West"));
+    } else {
+        panic!("array_of_variants not parsed as array");
+    }
+
+    // Variants in arrays (lowercase)
+    if let Some(Value::Array(arr)) = map.get("mixed_case_array") {
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0].as_variant(), Some("fullscreen"));
+        assert_eq!(arr[1].as_variant(), Some("windowed"));
+        assert_eq!(arr[2].as_variant(), Some("borderless"));
+    } else {
+        panic!("mixed_case_array not parsed as array");
+    }
+}
+
+#[test]
+fn variants_with_payloads() {
+    let data = r#"
+            simple: :fullscreen
+            with_tuple: :windowed (768, 1024)
+            with_single: :borderless (true)
+            with_object: :player {
+                name: "Alice"
+                hp: 100
+            }
+            with_array: :colors [255, 128, 0]
+            empty_tuple: :empty ()
+            array_of_payloads: [
+                :ok (42),
+                :error ("failed"),
+                :pending
+            ]
+        "#;
+
+    let mut parser = Parser::new(data);
+    let map = parser.parse();
+    assert!(
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
+    );
+
+    // Simple variant without payload
+    if let Some((name, payload)) = map.get("simple").and_then(Value::as_variant_with_payload) {
+        assert_eq!(name, "fullscreen");
+        assert!(payload.is_none());
+    } else {
+        panic!("simple not parsed as variant");
+    }
+
+    // Variant with tuple payload (multiple values in parens)
+    if let Some((name, payload)) = map
+        .get("with_tuple")
+        .and_then(Value::as_variant_with_payload)
+    {
+        assert_eq!(name, "windowed");
+        if let Some(Value::Tuple(items)) = payload {
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].as_int(), Some(768));
+            assert_eq!(items[1].as_int(), Some(1024));
+        } else {
+            panic!("with_tuple payload not parsed as tuple, got: {:?}", payload);
+        }
+    } else {
+        panic!("with_tuple not parsed as variant");
+    }
+
+    // Variant with single value payload (wrapped in tuple)
+    if let Some((name, payload)) = map
+        .get("with_single")
+        .and_then(Value::as_variant_with_payload)
+    {
+        assert_eq!(name, "borderless");
+        if let Some(Value::Tuple(items)) = payload {
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].as_bool(), Some(true));
+        } else {
+            panic!("with_single should have tuple payload");
+        }
+    } else {
+        panic!("with_single not parsed as variant");
+    }
+
+    // Variant with object payload
+    if let Some((name, payload)) = map
+        .get("with_object")
+        .and_then(Value::as_variant_with_payload)
+    {
+        assert_eq!(name, "player");
+        if let Some(Value::Object(obj)) = payload {
+            assert_eq!(obj.get("name").and_then(Value::as_str), Some("Alice"));
+            assert_eq!(obj.get("hp").and_then(Value::as_int), Some(100));
+        } else {
+            panic!("with_object payload not parsed as object");
+        }
+    } else {
+        panic!("with_object not parsed as variant");
+    }
+
+    // Variant with array payload
+    if let Some((name, payload)) = map
+        .get("with_array")
+        .and_then(Value::as_variant_with_payload)
+    {
+        assert_eq!(name, "colors");
+        if let Some(Value::Array(arr)) = payload {
+            assert_eq!(arr.len(), 3);
+            assert_eq!(arr[0].as_int(), Some(255));
+            assert_eq!(arr[1].as_int(), Some(128));
+            assert_eq!(arr[2].as_int(), Some(0));
+        } else {
+            panic!("with_array payload not parsed as array");
+        }
+    } else {
+        panic!("with_array not parsed as variant");
+    }
+
+    // Empty payload
+    if let Some((name, payload)) = map
+        .get("empty_tuple")
+        .and_then(Value::as_variant_with_payload)
+    {
+        assert_eq!(name, "empty");
+        if let Some(Value::Tuple(items)) = payload {
+            assert_eq!(items.len(), 0);
+        } else {
+            panic!("empty_tuple should have empty tuple payload");
+        }
+    } else {
+        panic!("empty_tuple not parsed as variant");
+    }
+
+    // Array containing variants with payloads
+    if let Some(Value::Array(arr)) = map.get("array_of_payloads") {
+        assert_eq!(arr.len(), 3);
+
+        // :ok (42)
+        if let Some((name, payload)) = arr[0].as_variant_with_payload() {
+            assert_eq!(name, "ok");
+            if let Some(Value::Tuple(items)) = payload {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].as_int(), Some(42));
+            } else {
+                panic!("First array element payload should be tuple");
+            }
+        } else {
+            panic!("First array element not parsed as variant");
+        }
+
+        // :error ("failed")
+        if let Some((name, payload)) = arr[1].as_variant_with_payload() {
+            assert_eq!(name, "error");
+            if let Some(Value::Tuple(items)) = payload {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].as_str(), Some("failed"));
+            } else {
+                panic!("Second array element payload should be tuple");
+            }
+        } else {
+            panic!("Second array element not parsed as variant");
+        }
+
+        // :pending (no payload)
+        if let Some((name, payload)) = arr[2].as_variant_with_payload() {
+            assert_eq!(name, "pending");
+            assert!(payload.is_none());
+        } else {
+            panic!("Third array element not parsed as variant");
+        }
+    } else {
+        panic!("array_of_payloads not parsed as array");
     }
 }
