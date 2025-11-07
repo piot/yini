@@ -108,9 +108,9 @@ fn comments() {
 #[test]
 fn flat_array() {
     let data = r#"
-            numbers: [1, 2, 3, 4, 5]
-            mixed: ["hello", 42, true, 3.14]
-            spaced: [This, Is, "A list", 23]
+            numbers: [1 2 3 4 5]
+            mixed: ["hello"  42 true 3.14]
+            spaced: ["This Is" "A list" 23]
         "#;
     let mut parser = Parser::new(data);
     let map = parser.parse();
@@ -139,11 +139,10 @@ fn flat_array() {
     }
 
     if let Some(Value::Array(spaced)) = map.get("spaced") {
-        assert_eq!(spaced.len(), 4);
-        assert_eq!(spaced[0].as_str(), Some("This"));
-        assert_eq!(spaced[1].as_str(), Some("Is"));
-        assert_eq!(spaced[2].as_str(), Some("A list"));
-        assert_eq!(spaced[3].as_int(), Some(23));
+        assert_eq!(spaced.len(), 3);
+        assert_eq!(spaced[0].as_str(), Some("This Is"));
+        assert_eq!(spaced[1].as_str(), Some("A list"));
+        assert_eq!(spaced[2].as_int(), Some(23));
     } else {
         panic!("spaced not parsed as array");
     }
@@ -153,9 +152,9 @@ fn flat_array() {
 fn array_with_tuples() {
     let data = r#"
             pairs: [
-                "key1" "value",
-                "another" "another_value",
-                "mixed" 42,
+                ("key1" "value")
+                ("another" "another_value")
+                ("mixed" 42)
             ]
         "#;
     let mut parser = Parser::new(data);
@@ -198,24 +197,24 @@ fn array_with_tuples() {
 }
 
 #[test]
-fn array_with_objects() {
+fn array_with_structs() {
     let data = r#"
             people: [
                 {
                     name: "Alice"
                     age: 30
-                },
+                }
                 {
                     name: "Bob"
                     age: 25
                 }
             ]
             mixed_array: [
-                "simple string",
-                42,
+                "simple string"
+                42
                 {
                     nested_key: "nested_value"
-                    inner_array: [1, 2, 3]
+                    inner_array: [1 2 3]
                 }
             ]
         "#;
@@ -230,14 +229,14 @@ fn array_with_objects() {
     if let Some(Value::Array(people)) = map.get("people") {
         assert_eq!(people.len(), 2);
 
-        if let Some(alice) = people[0].as_object() {
+        if let Some(alice) = people[0].as_struct() {
             assert_eq!(alice.get("name").and_then(Value::as_str), Some("Alice"));
             assert_eq!(alice.get("age").and_then(Value::as_int), Some(30));
         } else {
             panic!("First person not parsed as object");
         }
 
-        if let Some(bob) = people[1].as_object() {
+        if let Some(bob) = people[1].as_struct() {
             assert_eq!(bob.get("name").and_then(Value::as_str), Some("Bob"));
             assert_eq!(bob.get("age").and_then(Value::as_int), Some(25));
         } else {
@@ -252,7 +251,7 @@ fn array_with_objects() {
         assert_eq!(mixed[0].as_str(), Some("simple string"));
         assert_eq!(mixed[1].as_int(), Some(42));
 
-        if let Some(nested) = mixed[2].as_object() {
+        if let Some(nested) = mixed[2].as_struct() {
             assert_eq!(
                 nested.get("nested_key").and_then(Value::as_str),
                 Some("nested_value")
@@ -325,33 +324,36 @@ fn valid_formatting_no_errors() {
 }
 
 #[test]
-fn error_missing_colon() {
+fn optional_colons_everywhere() {
     let data = r#"
             key1 42
             key2: 99
+            key3 "hello"
+            key4: world
         "#;
     let mut parser = Parser::new(data);
-    let _map = parser.parse();
-    assert!(!parser.errors().is_empty(), "Should have parsing errors");
+    let map = parser.parse();
 
-    // Should have an error about missing colon
-    let errors = parser.errors();
+    // Should parse without errors - colons are optional
     assert!(
-        errors
-            .iter()
-            .any(|e| matches!(e.kind, ErrorKind::ExpectedColonAfterKey)),
-        "Expected ExpectedColonAfterKey error, got: {:?}",
-        errors
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
     );
+
+    assert_eq!(map.get("key1").and_then(Value::as_int), Some(42));
+    assert_eq!(map.get("key2").and_then(Value::as_int), Some(99));
+    assert_eq!(map.get("key3").and_then(Value::as_str), Some("hello"));
+    assert_eq!(map.get("key4").and_then(Value::as_str), Some("world"));
 }
 
 #[test]
 fn tuples_in_object_values() {
     let data = r#"
-            pair: ("key", "value")
-            triple: ("a", "b", "c")
-            quad: (1, 2, 3, 4)
-            mixed: (Alice, 30, true)
+            pair: ("key" "value")
+            triple: ("a" "b" "c")
+            quad: (1 2 3 4)
+            mixed: ("Alice" 30 true)
         "#;
     let mut parser = Parser::new(data);
     let map = parser.parse();
@@ -407,8 +409,8 @@ fn tuples_in_object_values() {
 fn array_with_three_item_tuples() {
     let data = r#"
             triples [ # intentionally without :
-                "a" "b" "c",
-                1 2 3,
+                ("a" "b" "c")
+                (1 2 3)
             ]
         "#;
     let mut parser = Parser::new(data);
@@ -451,7 +453,7 @@ fn array_with_three_item_tuples() {
 fn unquoted_strings() {
     let data = r#"
             description: this is a very long description
-            tuple: (this is a long description inside a tuple, another)
+            tuple: ("this is a long description inside a tuple" another)
         "#;
 
     let mut parser = Parser::new(data);
@@ -488,9 +490,9 @@ fn variants() {
             mixed: lowercase
             lowercase_variant: :fullscreen
             snake_case_variant: :window_mode
-            tuple_with_variant: (:Player, 100, :Active)
-            array_of_variants: [:North, :South, :East, :West]
-            mixed_case_array: [:fullscreen, :windowed, :borderless]
+            tuple_with_variant: (:Player 100 :Active)
+            array_of_variants: [:North :South :East :West]
+            mixed_case_array: [:fullscreen :windowed :borderless]
         "#;
 
     let mut parser = Parser::new(data);
@@ -564,17 +566,17 @@ fn variants() {
 fn variants_with_payloads() {
     let data = r#"
             simple: :fullscreen
-            with_tuple: :windowed (768, 1024)
-            with_single: :borderless (true)
-            with_object: :player {
+            with_tuple: :windowed(768 1024)
+            with_single: :borderless(true)
+            with_object: :player{
                 name: "Alice"
                 hp: 100
             }
-            with_array: :colors [255, 128, 0]
-            empty_tuple: :empty ()
+            with_array: :colors[255 128 0]
+            empty_tuple: :empty()
             array_of_payloads: [
-                :ok (42),
-                :error ("failed"),
+                :ok(42)
+                :error("failed")
                 :pending
             ]
         "#;
@@ -716,5 +718,190 @@ fn variants_with_payloads() {
         }
     } else {
         panic!("array_of_payloads not parsed as array");
+    }
+}
+
+#[test]
+fn long_unquoted_strings() {
+    let data = r#"
+            description: this is a long string with many words, and that is fine
+            path /usr/local/bin/some-executable --flag1 --flag2 value
+            sentence: The quick brown fox jumps over the lazy dog.
+        "#;
+
+    let mut parser = Parser::new(data);
+    let map = parser.parse();
+    assert!(
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
+    );
+
+    assert_eq!(
+        map.get("description").and_then(|v| v.as_str()),
+        Some("this is a long string with many words, and that is fine")
+    );
+    assert_eq!(
+        map.get("path").and_then(|v| v.as_str()),
+        Some("/usr/local/bin/some-executable --flag1 --flag2 value")
+    );
+    assert_eq!(
+        map.get("sentence").and_then(|v| v.as_str()),
+        Some("The quick brown fox jumps over the lazy dog.")
+    );
+}
+
+#[test]
+fn optional_colon_for_arrays_and_objects() {
+    let data = r#"
+            array_field [
+                1
+                2
+                3
+            ]
+            object_field {
+                nested value
+            }
+            tuple_field (1 2 3)
+        "#;
+
+    let mut parser = Parser::new(data);
+    let map = parser.parse();
+    assert!(
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
+    );
+
+    // Check array parsed correctly
+    if let Some(arr) = map.get("array_field").and_then(|v| v.as_array()) {
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0].as_int(), Some(1));
+        assert_eq!(arr[1].as_int(), Some(2));
+        assert_eq!(arr[2].as_int(), Some(3));
+    } else {
+        panic!("array_field not parsed as array");
+    }
+
+    // Check object parsed correctly
+    if let Some(obj) = map.get("object_field").and_then(|v| v.as_struct()) {
+        assert_eq!(obj.get("nested").and_then(|v| v.as_str()), Some("value"));
+    } else {
+        panic!("object_field not parsed as object");
+    }
+
+    // Check tuple parsed correctly
+    if let Some(tuple) = map.get("tuple_field").and_then(|v| v.as_tuple()) {
+        assert_eq!(tuple.len(), 3);
+        assert_eq!(tuple[0].as_int(), Some(1));
+        assert_eq!(tuple[1].as_int(), Some(2));
+        assert_eq!(tuple[2].as_int(), Some(3));
+    } else {
+        panic!("tuple_field not parsed as tuple");
+    }
+}
+
+#[test]
+fn no_multiple_fields_on_same_line() {
+    // When multiple field-like patterns appear on one line,
+    // everything after the first field value becomes part of that value
+    let data = r#"
+            field_1: value1 field_2: value2
+            field_3: 123
+        "#;
+
+    let mut parser = Parser::new(data);
+    let map = parser.parse();
+
+    // Should only have 2 fields: field_1 and field_3
+    assert_eq!(map.len(), 2);
+
+    // field_1's value should be the entire rest of the line (as a string)
+    assert_eq!(
+        map.get("field_1").and_then(|v| v.as_str()),
+        Some("value1 field_2: value2")
+    );
+
+    // field_3 should be an integer
+    assert_eq!(map.get("field_3").and_then(|v| v.as_int()), Some(123));
+
+    // field_2 should NOT exist as a separate field
+    assert!(map.get("field_2").is_none());
+}
+
+#[test]
+fn no_multiple_object_fields_on_same_line() {
+    let data = r#"
+            obj: {
+                field_a: value_a field_b: value_b
+                field_c: value_c
+            }
+        "#;
+
+    let mut parser = Parser::new(data);
+    let map = parser.parse();
+    assert!(
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
+    );
+
+    if let Some(obj) = map.get("obj").and_then(|v| v.as_struct()) {
+        // Should only have 2 fields in the object
+        assert_eq!(obj.len(), 2);
+
+        // field_a's value includes the rest of the line
+        assert_eq!(
+            obj.get("field_a").and_then(|v| v.as_str()),
+            Some("value_a field_b: value_b")
+        );
+
+        // field_c should exist
+        assert_eq!(obj.get("field_c").and_then(|v| v.as_str()), Some("value_c"));
+
+        // field_b should NOT exist as a separate field
+        assert!(obj.get("field_b").is_none());
+    } else {
+        panic!("obj not parsed as object");
+    }
+}
+
+#[test]
+fn object_fields_with_optional_colons() {
+    let data = r#"
+            config {
+                host "localhost"
+                port 8080
+                debug: true
+                ssl false
+                nested {
+                    key1 value1
+                    key2: value2
+                }
+            }
+        "#;
+
+    let mut parser = Parser::new(data);
+    let map = parser.parse();
+    assert!(
+        parser.errors().is_empty(),
+        "Parse errors: {:?}",
+        parser.errors()
+    );
+
+    if let Some(obj) = map.get("config").and_then(|v| v.as_struct()) {
+        assert_eq!(obj.get("host").and_then(|v| v.as_str()), Some("localhost"));
+        assert_eq!(obj.get("port").and_then(|v| v.as_int()), Some(8080));
+        assert_eq!(obj.get("debug").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(obj.get("ssl").and_then(|v| v.as_bool()), Some(false));
+
+        if let Some(nested) = obj.get("nested").and_then(|v| v.as_struct()) {
+            assert_eq!(nested.get("key1").and_then(|v| v.as_str()), Some("value1"));
+            assert_eq!(nested.get("key2").and_then(|v| v.as_str()), Some("value2"));
+        } else {
+            panic!("nested not parsed as object");
+        }
+    } else {
+        panic!("config not parsed as object");
     }
 }

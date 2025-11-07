@@ -9,14 +9,11 @@ use seq_map::SeqMap;
 pub enum ErrorKind {
     ExpectedValueOnSameLine,
     ExpectedNewlineAfterKeyValue,
-    ExpectedColonAfterKey,
     UnterminatedBlock,
     UnterminatedString,
-    ExpectedCommaBetweenArrayItems,
     InvalidUtf8InNumber,
     InvalidFloatFormat(String),
     InvalidIntegerFormat(String),
-    InvalidBooleanLiteral,
     UnexpectedEndOfInput,
 }
 
@@ -34,12 +31,12 @@ pub enum Value {
     Num(f64),
     Bool(bool),
     Variant(String, Option<Box<Value>>),
-    Object(Object),
+    Object(Struct),
     Array(Vec<Value>),
     Tuple(Vec<Value>),
 }
 
-pub type Object = SeqMap<String, Value>;
+pub type Struct = SeqMap<String, Value>;
 
 pub struct Parser<'a> {
     input: &'a [u8],
@@ -62,19 +59,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse(&mut self) -> Object {
-        let mut root: Object = SeqMap::new();
+    pub fn parse(&mut self) -> Struct {
+        let mut root: Struct = SeqMap::new();
         self.skip_ws_and_comments();
         while !self.is_eof() {
             let key = self.parse_key();
             self.skip_horizontal_ws();
 
-            self.skip_horizontal_ws();
-            if self.peek_byte() == Some(b'{') || self.peek_byte() == Some(b'[') {
-                // accept shorthand without colon for objects and arrays
-            } else if !self.consume_colon() {
-                self.skip_to_next_line();
-                continue;
+            // Colon is optional - consume it if present
+            if self.peek_byte() == Some(b':') {
+                self.next_byte();
             }
 
             self.skip_horizontal_ws();
@@ -107,7 +101,7 @@ impl<'a> Parser<'a> {
         &self.errors
     }
 
-    fn parse_object(&mut self) -> Object {
+    fn parse_struct(&mut self) -> Struct {
         let mut map = SeqMap::new();
         self.skip_ws_and_comments();
 
@@ -119,12 +113,9 @@ impl<'a> Parser<'a> {
             let key = self.parse_key();
             self.skip_horizontal_ws();
 
-            self.skip_horizontal_ws();
-            if self.peek_byte() == Some(b'{') || self.peek_byte() == Some(b'[') {
-                // accept shorthand without colon for objects and arrays
-            } else if !self.consume_colon() {
-                self.skip_to_next_line();
-                continue;
+            // Colon is optional - consume it if present
+            if self.peek_byte() == Some(b':') {
+                self.next_byte();
             }
 
             self.skip_horizontal_ws();
@@ -176,76 +167,38 @@ impl<'a> Parser<'a> {
                 return array;
             }
 
-            // Parse first value for this element
-            let first = self.parse_value();
-            self.skip_ws_and_comments();
-
             if self.is_eof() {
-                // End of input after first value
-                array.push(first);
+                self.errors.push(ParseError {
+                    line: self.line,
+                    column: self.column,
+                    kind: ErrorKind::UnexpectedEndOfInput,
+                });
                 return array;
             }
 
+            // Parse a single value (tuples must be explicitly wrapped in parentheses)
+            let value = self.parse_value();
+            array.push(value);
+
+            self.skip_ws_and_comments();
+
             match self.peek_byte() {
-                // Single-value element immediately followed by a delimiter
-                Some(b',') => {
-                    array.push(first);
-                    self.next_byte();
-                }
                 Some(b']') => {
-                    array.push(first);
+                    // End of array
                     self.next_byte();
                     return array;
                 }
-                _ => {
-                    // Parse tuple elements (2 or more values before comma/bracket)
-                    let mut tuple_items = vec![first];
-
-                    loop {
-                        let prev_pos = self.pos;
-                        if self.is_eof() {
-                            // End of input in tuple
-                            array.push(Value::Tuple(tuple_items));
-                            return array;
-                        }
-                        let next_value = self.parse_value();
-                        tuple_items.push(next_value);
-                        self.skip_ws_and_comments();
-
-                        // If no progress, break to avoid infinite loop
-                        if self.pos == prev_pos {
-                            self.errors.push(ParseError {
-                                line: self.line,
-                                column: self.column,
-                                kind: ErrorKind::UnexpectedEndOfInput,
-                            });
-                            array.push(Value::Tuple(tuple_items));
-                            return array;
-                        }
-
-                        match self.peek_byte() {
-                            Some(b',') => {
-                                array.push(Value::Tuple(tuple_items));
-                                self.next_byte();
-                                break;
-                            }
-                            Some(b']') => {
-                                array.push(Value::Tuple(tuple_items));
-                                self.next_byte();
-                                return array;
-                            }
-                            Some(_) => {}
-                            None => {
-                                self.errors.push(ParseError {
-                                    line: self.line,
-                                    column: self.column,
-                                    kind: ErrorKind::UnexpectedEndOfInput,
-                                });
-                                array.push(Value::Tuple(tuple_items));
-                                return array;
-                            }
-                        }
-                    }
+                Some(_) => {
+                    // Whitespace-separated item, continue to next iteration
+                    // No error needed since commas are optional
+                }
+                None => {
+                    self.errors.push(ParseError {
+                        line: self.line,
+                        column: self.column,
+                        kind: ErrorKind::UnexpectedEndOfInput,
+                    });
+                    return array;
                 }
             }
         }
@@ -269,7 +222,7 @@ impl<'a> Parser<'a> {
             }
             Some(b'{') => {
                 self.next_byte();
-                Value::Object(self.parse_object())
+                Value::Object(self.parse_struct())
             }
             Some(b'[') => {
                 self.next_byte();
@@ -281,20 +234,19 @@ impl<'a> Parser<'a> {
                 let id = self.parse_variant_name();
 
                 // Check for optional payload: (tuple) {object} [array]
-                // Use horizontal whitespace only, don't consume newlines
-                self.skip_horizontal_ws();
+                // NO whitespace allowed between variant name and payload
                 let payload = match self.peek_byte() {
                     Some(b'(') => {
-                        // Tuple payload: :variant (a, b, c)
+                        // Tuple payload: :variant(a, b, c)
                         Some(Box::new(self.parse_tuple()))
                     }
                     Some(b'{') => {
-                        // Object payload: :variant {key: value}
+                        // Object payload: :variant{key: value}
                         self.next_byte(); // consume '{'
-                        Some(Box::new(Value::Object(self.parse_object())))
+                        Some(Box::new(Value::Object(self.parse_struct())))
                     }
                     Some(b'[') => {
-                        // Array payload: :variant [1, 2, 3]
+                        // Array payload: :variant[1, 2, 3]
                         self.next_byte(); // consume '['
                         Some(Box::new(Value::Array(self.parse_array())))
                     }
@@ -394,7 +346,7 @@ impl<'a> Parser<'a> {
                     // collect until comma, ')' or end-of-input/comment/newline
                     let start = self.pos;
                     while let Some(b) = self.peek_byte() {
-                        if b == b',' || b == b')' || b == b'#' || b == b'\n' {
+                        if b == b')' || b == b'#' || b == b'\n' {
                             break;
                         }
                         self.next_byte();
@@ -427,9 +379,6 @@ impl<'a> Parser<'a> {
             self.skip_ws_and_comments();
 
             match self.peek_byte() {
-                Some(b',') => {
-                    self.next_byte();
-                }
                 Some(b')') => {
                     self.next_byte();
                     break;
@@ -438,25 +387,7 @@ impl<'a> Parser<'a> {
                     // allow comments/newlines inside tuple, keep looping
                 }
                 Some(_) => {
-                    // unexpected token, try to recover by consuming until comma or ')'
-                    self.errors.push(ParseError {
-                        line: self.line,
-                        column: self.column,
-                        kind: ErrorKind::ExpectedCommaBetweenArrayItems,
-                    });
-                    // consume until ',' or ')' or eof
-                    loop {
-                        match self.peek_byte() {
-                            Some(b',' | b')') => {
-                                self.next_byte();
-                                break;
-                            }
-                            Some(_) => {
-                                let _ = self.next_byte();
-                            }
-                            None => break,
-                        }
-                    }
+                    // Whitespace-separated item, continue to next iteration
                 }
                 None => break,
             }
@@ -465,48 +396,48 @@ impl<'a> Parser<'a> {
         Value::Tuple(items)
     }
 
+    #[inline]
     fn parse_identifier_or_string(&mut self) -> String {
         self.skip_ws_and_comments();
         if self.peek_byte() == Some(b'"') {
             self.parse_string()
         } else {
             let start = self.pos;
-            while let Some(&b) = self.input.get(self.pos) {
-                let c = b as char;
-                if c.is_whitespace()
-                    || c == '{'
-                    || c == '}'
-                    || c == '['
-                    || c == ']'
-                    || c == ','
-                    || c == ':'
-                {
-                    break;
+            while self.pos < self.input.len() {
+                // SAFETY: We just checked pos < len
+                let b = unsafe { *self.input.get_unchecked(self.pos) };
+                // Fast delimiter check
+                match b {
+                    b' ' | b'\t' | b'\n' | b'\r' | b'{' | b'}' | b'[' | b']' |  b':' => break,
+                    _ => {
+                        self.pos += 1;
+                        self.column += 1;
+                    }
                 }
-                self.advance_byte(b);
             }
-            String::from_utf8_lossy(&self.input[start..self.pos]).into_owned()
+            // SAFETY: start and pos are valid indices
+            let slice = unsafe { self.input.get_unchecked(start..self.pos) };
+            String::from_utf8_lossy(slice).into_owned()
         }
     }
 
+    #[inline]
     fn parse_variant_name(&mut self) -> String {
         let start = self.pos;
-        while let Some(&b) = self.input.get(self.pos) {
-            let c = b as char;
-            if c.is_whitespace()
-                || c == '{'
-                || c == '}'
-                || c == '['
-                || c == ']'
-                || c == ','
-                || c == ')'
-                || c == ':'
-            {
-                break;
+        while self.pos < self.input.len() {
+            // SAFETY: We just checked pos < len
+            let b = unsafe { *self.input.get_unchecked(self.pos) };
+            match b {
+                b' ' | b'\t' | b'\n' | b'\r' | b'{' | b'}' | b'[' | b']' | b')' | b'(' | b':' => break,
+                _ => {
+                    self.pos += 1;
+                    self.column += 1;
+                }
             }
-            self.advance_byte(b);
         }
-        String::from_utf8_lossy(&self.input[start..self.pos]).into_owned()
+        // SAFETY: start and pos are valid indices
+        let slice = unsafe { self.input.get_unchecked(start..self.pos) };
+        String::from_utf8_lossy(slice).into_owned()
     }
 
     fn parse_string(&mut self) -> String {
@@ -539,35 +470,43 @@ impl<'a> Parser<'a> {
         String::from_utf8_lossy(&raw).into_owned()
     }
 
+    #[inline]
     fn parse_numeric(&mut self) -> Value {
         let start = self.pos;
         // optional sign
         if self.peek_byte() == Some(b'-') {
-            self.advance_byte(b'-');
+            self.pos += 1;
+            self.column += 1;
         }
         // digits before decimal
-        while let Some(&b) = self.input.get(self.pos) {
-            let c = b as char;
-            if !c.is_ascii_digit() {
+        while self.pos < self.input.len() {
+            // SAFETY: We just checked pos < len
+            let b = unsafe { *self.input.get_unchecked(self.pos) };
+            if !b.is_ascii_digit() {
                 break;
             }
-            self.advance_byte(b);
+            self.pos += 1;
+            self.column += 1;
         }
         let is_float = if self.peek_byte() == Some(b'.') {
             // consume '.' and fraction
-            self.advance_byte(b'.');
-            while let Some(&b) = self.input.get(self.pos) {
-                let c = b as char;
-                if !c.is_ascii_digit() {
+            self.pos += 1;
+            self.column += 1;
+            while self.pos < self.input.len() {
+                // SAFETY: We just checked pos < len
+                let b = unsafe { *self.input.get_unchecked(self.pos) };
+                if !b.is_ascii_digit() {
                     break;
                 }
-                self.advance_byte(b);
+                self.pos += 1;
+                self.column += 1;
             }
             true
         } else {
             false
         };
-        let slice = &self.input[start..self.pos];
+        // SAFETY: start..pos are valid indices within input
+        let slice = unsafe { self.input.get_unchecked(start..self.pos) };
         let Ok(s) = std::str::from_utf8(slice) else {
             self.errors.push(ParseError {
                 line: self.line,
@@ -601,13 +540,19 @@ impl<'a> Parser<'a> {
 
     fn skip_ws_and_comments(&mut self) {
         loop {
-            while let Some(&b) = self.input.get(self.pos) {
-                if (b as char).is_whitespace() {
-                    self.advance_byte(b);
-                } else {
-                    break;
+            // Fast path: skip whitespace using direct byte comparisons
+            while self.pos < self.input.len() {
+                // SAFETY: We just checked pos < len
+                let b = unsafe { *self.input.get_unchecked(self.pos) };
+                match b {
+                    b' ' | b'\t' | b'\n' | b'\r' => {
+                        self.advance_byte(b);
+                    }
+                    _ => break,
                 }
             }
+
+            // Check for comment
             if self.peek_byte() == Some(b'#') {
                 self.advance_byte(b'#');
                 while let Some(b) = self.next_byte() {
@@ -621,34 +566,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn consume_colon(&mut self) -> bool {
-        if self.peek_byte() == Some(b':') {
-            self.next_byte();
-            true
-        } else {
-            self.errors.push(ParseError {
-                line: self.line,
-                column: self.column,
-                kind: ErrorKind::ExpectedColonAfterKey,
-            });
-            false
-        }
-    }
-
-    fn skip_to_next_line(&mut self) {
-        while let Some(b) = self.peek_byte() {
-            if b == b'\n' {
-                self.next_byte();
-                break;
-            }
-            self.next_byte();
-        }
-    }
-
+    #[inline]
     fn skip_horizontal_ws(&mut self) {
-        while let Some(&b) = self.input.get(self.pos) {
+        while self.pos < self.input.len() {
+            // SAFETY: We just checked pos < len
+            let b = unsafe { *self.input.get_unchecked(self.pos) };
             if b == b' ' || b == b'\t' {
-                self.advance_byte(b);
+                self.pos += 1;
+                self.column += 1;
             } else {
                 break;
             }
@@ -677,18 +602,29 @@ impl<'a> Parser<'a> {
         });
     }
 
+    #[inline(always)]
     fn peek_byte(&self) -> Option<u8> {
-        self.input.get(self.pos).copied()
-    }
-
-    fn next_byte(&mut self) -> Option<u8> {
-        let b = self.peek_byte();
-        if let Some(bb) = b {
-            self.advance_byte(bb);
+        if self.pos < self.input.len() {
+            // SAFETY: We just checked that pos < len
+            Some(unsafe { *self.input.get_unchecked(self.pos) })
+        } else {
+            None
         }
-        b
     }
 
+    #[inline(always)]
+    fn next_byte(&mut self) -> Option<u8> {
+        if self.pos < self.input.len() {
+            // SAFETY: We just checked that pos < len
+            let b = unsafe { *self.input.get_unchecked(self.pos) };
+            self.advance_byte(b);
+            Some(b)
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
     const fn advance_byte(&mut self, b: u8) {
         self.pos += 1;
         if b == b'\n' {
@@ -699,8 +635,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // advance_bytes removed; not needed anymore
-
+    #[inline(always)]
     const fn is_eof(&self) -> bool {
         self.pos >= self.input.len()
     }
@@ -708,7 +643,7 @@ impl<'a> Parser<'a> {
 
 impl Value {
     #[must_use]
-    pub const fn as_object(&self) -> Option<&Object> {
+    pub const fn as_struct(&self) -> Option<&Struct> {
         if let Self::Object(o) = self {
             Some(o)
         } else {
