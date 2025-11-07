@@ -31,7 +31,7 @@ pub enum Value {
     Num(f64),
     Bool(bool),
     Variant(String, Option<Box<Value>>),
-    Object(Struct),
+    Struct(Struct),
     Array(Vec<Value>),
     Tuple(Vec<Value>),
 }
@@ -40,6 +40,7 @@ pub type Struct = SeqMap<String, Value>;
 
 pub struct Parser<'a> {
     input: &'a [u8],
+    len: usize,
     pos: usize,
     line: usize,
     column: usize,
@@ -50,8 +51,10 @@ impl<'a> Parser<'a> {
     /// Create a new parser over the input string.
     #[must_use]
     pub const fn new(input: &'a str) -> Self {
+        let bytes = input.as_bytes();
         Parser {
-            input: input.as_bytes(),
+            input: bytes,
+            len: bytes.len(),
             pos: 0,
             line: 1,
             column: 1,
@@ -222,7 +225,7 @@ impl<'a> Parser<'a> {
             }
             Some(b'{') => {
                 self.next_byte();
-                Value::Object(self.parse_struct())
+                Value::Struct(self.parse_struct())
             }
             Some(b'[') => {
                 self.next_byte();
@@ -243,7 +246,7 @@ impl<'a> Parser<'a> {
                     Some(b'{') => {
                         // Object payload: :variant{key: value}
                         self.next_byte(); // consume '{'
-                        Some(Box::new(Value::Object(self.parse_struct())))
+                        Some(Box::new(Value::Struct(self.parse_struct())))
                     }
                     Some(b'[') => {
                         // Array payload: :variant[1, 2, 3]
@@ -304,15 +307,13 @@ impl<'a> Parser<'a> {
                     self.next_byte();
                 }
                 // slice from start_pos..pos (includes the first token and whitespace) and trim
-                let s = String::from_utf8_lossy(&self.input[start_pos..self.pos])
-                    .trim()
-                    .to_string();
-                if s.is_empty() {
+                let trimmed = self.slice_to_str(start_pos, self.pos).trim();
+                if trimmed.is_empty() {
                     // fallback
                     self.pos = start_pos;
                     first
                 } else {
-                    Value::Str(s)
+                    Value::Str(trimmed.to_owned())
                 }
             }
         }
@@ -351,18 +352,16 @@ impl<'a> Parser<'a> {
                         }
                         self.next_byte();
                     }
-                    let s = String::from_utf8_lossy(&self.input[start..self.pos])
-                        .trim()
-                        .to_string();
-                    if s.is_empty() {
+                    let trimmed = self.slice_to_str(start, self.pos).trim();
+                    if trimmed.is_empty() {
                         // fallback to parse_value to generate an error or value
                         self.parse_value()
-                    } else if s == "true" {
+                    } else if trimmed == "true" {
                         Value::Bool(true)
-                    } else if s == "false" {
+                    } else if trimmed == "false" {
                         Value::Bool(false)
                     } else {
-                        Value::Str(s)
+                        Value::Str(trimmed.to_owned())
                     }
                 }
                 None => {
@@ -403,12 +402,12 @@ impl<'a> Parser<'a> {
             self.parse_string()
         } else {
             let start = self.pos;
-            while self.pos < self.input.len() {
+            while self.pos < self.len {
                 // SAFETY: We just checked pos < len
                 let b = unsafe { *self.input.get_unchecked(self.pos) };
                 // Fast delimiter check
                 match b {
-                    b' ' | b'\t' | b'\n' | b'\r' | b'{' | b'}' | b'[' | b']' |  b':' => break,
+                    b' ' | b'\t' | b'\n' | b'\r' | b'{' | b'}' | b'[' | b']' | b':' => break,
                     _ => {
                         self.pos += 1;
                         self.column += 1;
@@ -416,19 +415,27 @@ impl<'a> Parser<'a> {
                 }
             }
             // SAFETY: start and pos are valid indices
-            let slice = unsafe { self.input.get_unchecked(start..self.pos) };
-            String::from_utf8_lossy(slice).into_owned()
+            self.slice_to_str(start, self.pos).to_owned()
         }
+    }
+
+    #[inline]
+    fn slice_to_str(&self, start: usize, end: usize) -> &str {
+        debug_assert!(start <= end && end <= self.len);
+        // SAFETY: input originates from a valid UTF-8 source string
+        unsafe { std::str::from_utf8_unchecked(&self.input[start..end]) }
     }
 
     #[inline]
     fn parse_variant_name(&mut self) -> String {
         let start = self.pos;
-        while self.pos < self.input.len() {
+        while self.pos < self.len {
             // SAFETY: We just checked pos < len
             let b = unsafe { *self.input.get_unchecked(self.pos) };
             match b {
-                b' ' | b'\t' | b'\n' | b'\r' | b'{' | b'}' | b'[' | b']' | b')' | b'(' | b':' => break,
+                b' ' | b'\t' | b'\n' | b'\r' | b'{' | b'}' | b'[' | b']' | b')' | b'(' | b':' => {
+                    break;
+                }
                 _ => {
                     self.pos += 1;
                     self.column += 1;
@@ -436,16 +443,18 @@ impl<'a> Parser<'a> {
             }
         }
         // SAFETY: start and pos are valid indices
-        let slice = unsafe { self.input.get_unchecked(start..self.pos) };
-        String::from_utf8_lossy(slice).into_owned()
+        self.slice_to_str(start, self.pos).to_owned()
     }
 
     fn parse_string(&mut self) -> String {
         self.next_byte();
-        let mut raw = Vec::new();
+        let mut raw = Vec::with_capacity(16);
         while let Some(b) = self.next_byte() {
             match b {
-                b'"' => return String::from_utf8_lossy(&raw).into_owned(),
+                b'"' => {
+                    // SAFETY: raw is built from the original UTF-8 input plus ASCII escapes
+                    return unsafe { String::from_utf8_unchecked(raw) };
+                }
                 b'\\' => {
                     if let Some(esc) = self.next_byte() {
                         match esc {
@@ -467,7 +476,8 @@ impl<'a> Parser<'a> {
             column: self.column,
             kind: ErrorKind::UnterminatedString,
         });
-        String::from_utf8_lossy(&raw).into_owned()
+        // SAFETY: partial string still contains only bytes from the original UTF-8 input
+        unsafe { String::from_utf8_unchecked(raw) }
     }
 
     #[inline]
@@ -479,7 +489,7 @@ impl<'a> Parser<'a> {
             self.column += 1;
         }
         // digits before decimal
-        while self.pos < self.input.len() {
+        while self.pos < self.len {
             // SAFETY: We just checked pos < len
             let b = unsafe { *self.input.get_unchecked(self.pos) };
             if !b.is_ascii_digit() {
@@ -492,7 +502,7 @@ impl<'a> Parser<'a> {
             // consume '.' and fraction
             self.pos += 1;
             self.column += 1;
-            while self.pos < self.input.len() {
+            while self.pos < self.len {
                 // SAFETY: We just checked pos < len
                 let b = unsafe { *self.input.get_unchecked(self.pos) };
                 if !b.is_ascii_digit() {
@@ -541,7 +551,7 @@ impl<'a> Parser<'a> {
     fn skip_ws_and_comments(&mut self) {
         loop {
             // Fast path: skip whitespace using direct byte comparisons
-            while self.pos < self.input.len() {
+            while self.pos < self.len {
                 // SAFETY: We just checked pos < len
                 let b = unsafe { *self.input.get_unchecked(self.pos) };
                 match b {
@@ -568,7 +578,7 @@ impl<'a> Parser<'a> {
 
     #[inline]
     fn skip_horizontal_ws(&mut self) {
-        while self.pos < self.input.len() {
+        while self.pos < self.len {
             // SAFETY: We just checked pos < len
             let b = unsafe { *self.input.get_unchecked(self.pos) };
             if b == b' ' || b == b'\t' {
@@ -604,7 +614,7 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn peek_byte(&self) -> Option<u8> {
-        if self.pos < self.input.len() {
+        if self.pos < self.len {
             // SAFETY: We just checked that pos < len
             Some(unsafe { *self.input.get_unchecked(self.pos) })
         } else {
@@ -614,7 +624,7 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn next_byte(&mut self) -> Option<u8> {
-        if self.pos < self.input.len() {
+        if self.pos < self.len {
             // SAFETY: We just checked that pos < len
             let b = unsafe { *self.input.get_unchecked(self.pos) };
             self.advance_byte(b);
@@ -637,14 +647,14 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     const fn is_eof(&self) -> bool {
-        self.pos >= self.input.len()
+        self.pos >= self.len
     }
 }
 
 impl Value {
     #[must_use]
     pub const fn as_struct(&self) -> Option<&Struct> {
-        if let Self::Object(o) = self {
+        if let Self::Struct(o) = self {
             Some(o)
         } else {
             None

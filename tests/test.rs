@@ -44,7 +44,7 @@ fn booleans() {
 }
 
 #[test]
-fn object() {
+fn basic_struct() {
     let data = r"
             Parent: {
                 child1: 1
@@ -54,7 +54,7 @@ fn object() {
     let mut parser = Parser::new(data);
     let map = parser.parse();
     assert!(parser.errors().is_empty());
-    if let Some(Value::Object(child)) = map.get("Parent") {
+    if let Some(Value::Struct(child)) = map.get("Parent") {
         assert_eq!(child.get("child1").and_then(Value::as_int), Some(1));
         assert_eq!(child.get("child2").and_then(Value::as_int), Some(2));
     } else {
@@ -79,8 +79,8 @@ fn parse_two_nested() {
         parser.errors()
     );
 
-    if let Some(Value::Object(level1)) = map.get("level1") {
-        if let Some(Value::Object(level2)) = level1.get("Level2") {
+    if let Some(Value::Struct(level1)) = map.get("level1") {
+        if let Some(Value::Struct(level2)) = level1.get("Level2") {
             assert_eq!(level2.get("key").and_then(Value::as_int), Some(42));
         } else {
             panic!("Level2 not parsed as object");
@@ -297,7 +297,7 @@ fn error_missing_newline_after_value() {
     let data = r"key1: 42 key2: 99";
     let mut parser = Parser::new(data);
     let _map = parser.parse();
-    // Under the new rule, unquoted rest-of-line strings are allowed for object fields,
+    // Under the new rule, unquoted rest-of-line strings are allowed for struct keys,
     // so this should parse without errors.
     assert!(
         parser.errors().is_empty(),
@@ -636,7 +636,7 @@ fn variants_with_payloads() {
         .and_then(Value::as_variant_with_payload)
     {
         assert_eq!(name, "player");
-        if let Some(Value::Object(obj)) = payload {
+        if let Some(Value::Struct(obj)) = payload {
             assert_eq!(obj.get("name").and_then(Value::as_str), Some("Alice"));
             assert_eq!(obj.get("hp").and_then(Value::as_int), Some(100));
         } else {
@@ -802,8 +802,8 @@ fn optional_colon_for_arrays_and_objects() {
 }
 
 #[test]
-fn no_multiple_fields_on_same_line() {
-    // When multiple field-like patterns appear on one line,
+fn no_multiple_keys_on_same_line() {
+    // When multiple keys-like patterns appear on one line,
     // everything after the first field value becomes part of that value
     let data = r#"
             field_1: value1 field_2: value2
@@ -813,7 +813,7 @@ fn no_multiple_fields_on_same_line() {
     let mut parser = Parser::new(data);
     let map = parser.parse();
 
-    // Should only have 2 fields: field_1 and field_3
+    // Should only have 2 keys: field_1 and field_3
     assert_eq!(map.len(), 2);
 
     // field_1's value should be the entire rest of the line (as a string)
@@ -830,7 +830,7 @@ fn no_multiple_fields_on_same_line() {
 }
 
 #[test]
-fn no_multiple_object_fields_on_same_line() {
+fn no_multiple_struct_keys_on_same_line() {
     let data = r#"
             obj: {
                 field_a: value_a field_b: value_b
@@ -847,7 +847,7 @@ fn no_multiple_object_fields_on_same_line() {
     );
 
     if let Some(obj) = map.get("obj").and_then(|v| v.as_struct()) {
-        // Should only have 2 fields in the object
+        // Should only have 2 keys in the struct
         assert_eq!(obj.len(), 2);
 
         // field_a's value includes the rest of the line
@@ -862,12 +862,12 @@ fn no_multiple_object_fields_on_same_line() {
         // field_b should NOT exist as a separate field
         assert!(obj.get("field_b").is_none());
     } else {
-        panic!("obj not parsed as object");
+        panic!("not parsed as struct");
     }
 }
 
 #[test]
-fn object_fields_with_optional_colons() {
+fn struct_keys_with_optional_colons() {
     let data = r#"
             config {
                 host "localhost"
@@ -899,9 +899,9 @@ fn object_fields_with_optional_colons() {
             assert_eq!(nested.get("key1").and_then(|v| v.as_str()), Some("value1"));
             assert_eq!(nested.get("key2").and_then(|v| v.as_str()), Some("value2"));
         } else {
-            panic!("nested not parsed as object");
+            panic!("nested not parsed as struct");
         }
     } else {
-        panic!("config not parsed as object");
+        panic!("config not parsed as struct");
     }
 }

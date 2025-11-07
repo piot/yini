@@ -47,12 +47,16 @@ color :rgb(255 128 0)
     }
 
     // Benchmark
-    let iterations = 10000;
+    let iterations = 200_000;
     let start = std::time::Instant::now();
 
     for _ in 0..iterations {
         let mut parser = Parser::new(data);
         let _ = parser.parse();
+        assert!(
+            parser.errors().is_empty(),
+            "benchmark should not contain errors"
+        );
     }
 
     let elapsed = start.elapsed();
