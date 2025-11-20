@@ -1,0 +1,162 @@
+%YAML 1.2
+---
+# Sublime Text syntax definition for yini format
+# Original can be found at: https://github.com/piot/yini
+name: Yini # seems to be usually upper case in Sublime
+file_extensions:
+  - yini
+  - yini.txt
+scope: source.yini
+
+contexts:
+  # Entry point: process comments first, then emit key/value pairs
+  main:
+    - include: comments
+    - include: key-value-pair
+
+  # Handles single-line shell-style comments
+  comments:
+    - match: '#.*$'
+      scope: comment.line.yini
+      captures:
+        0: comment.line.yini
+
+  # Recognizes a key (identifier or quoted) at the top level
+  key-value-pair:
+    - match: '^\s*'
+    - include: key-colon
+
+  # Shared pattern: key with optional colon separator
+  key-colon:
+    - match: '({{identifier_pattern}}|{{quoted_string}})(?:(:))?\s*'
+      captures:
+        1: entity.name.tag.yini
+        2: punctuation.separator.key-value.yini
+      push: value
+
+  # All possible value forms that may follow a key
+  value:
+    - include: comments
+    - include: variant
+    - include: struct
+    - include: array
+    - include: tuple
+    - include: boolean
+    - include: number
+    - include: string
+    - match: '$'
+      pop: true
+
+  # Variant values like :VariantName with optional payload
+  variant:
+    - match: '(:)({{identifier_pattern}})'
+      captures:
+        1: punctuation.definition.variant.yini
+        2: entity.name.type.yini
+      push: variant-payload
+
+  # Detects optional payload for variants before the next delimiter
+  variant-payload:
+    - match: '(?=\()'
+      set:
+        - include: tuple
+        - match: ''
+          pop: true
+    - match: '(?=\{)'
+      set:
+        - include: struct
+        - match: ''
+          pop: true
+    - match: '(?=\[)'
+      set:
+        - include: array
+        - match: ''
+          pop: true
+    - match: '(?=\s|#|$)'
+      pop: true
+
+  # Block style structs with braces
+  struct:
+    - match: '\{'
+      scope: punctuation.section.block.begin.yini
+      push:
+        - meta_scope: meta.struct.yini
+        - match: '\}'
+          scope: punctuation.section.block.end.yini
+          pop: true
+        - include: comments
+        - include: key-colon
+
+  # Inline arrays, allowing nested values separated by whitespace
+  array:
+    - match: '\['
+      scope: punctuation.section.brackets.begin.yini
+      push:
+        - meta_scope: meta.array.yini
+        - match: '\]'
+          scope: punctuation.section.brackets.end.yini
+          pop: true
+        - include: comments
+        - include: array-element
+
+  # Individual entries allowed inside arrays
+  array-element:
+    - include: variant
+    - include: struct
+    - include: tuple
+    - include: boolean
+    - include: number
+    - include: string
+    - match: '{{identifier_pattern}}'
+      scope: variable.other.yini
+
+  # Tuple form enclosed by parentheses
+  tuple:
+    - match: '\('
+      scope: punctuation.section.parens.begin.yini
+      push:
+        - meta_scope: meta.tuple.yini
+        - match: '\)'
+          scope: punctuation.section.parens.end.yini
+          pop: true
+        - include: comments
+        - include: tuple-element
+
+  # Entries allowed inside tuples
+  tuple-element:
+    - include: variant
+    - include: struct
+    - include: array
+    - include: boolean
+    - include: number
+    - include: string
+    - match: '{{identifier_pattern}}'
+      scope: variable.other.yini
+
+  # Boolean literals
+  boolean:
+    - match: '\b(true|false)\b'
+      scope: constant.language.boolean.yini
+
+  # Numeric literals: floats then ints
+  number:
+    - match: '-?\d+\.\d+([eE][+-]?\d+)?'
+      scope: constant.numeric.float.yini
+    - match: '-?\d+'
+      scope: constant.numeric.integer.yini
+
+  # Double quoted strings with standard escape handling
+  string:
+    - match: '"'
+      scope: punctuation.definition.string.begin.yini
+      push:
+        - meta_scope: string.quoted.double.yini
+        - match: '\\.'
+          scope: constant.character.escape.yini
+        - match: '"'
+          scope: punctuation.definition.string.end.yini
+          pop: true
+
+variables:
+  identifier_pattern: '[a-zA-Z_][a-zA-Z0-9_]*'
+  quoted_string: '"(?:[^"\\]|\\.)*"'

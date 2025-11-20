@@ -15,6 +15,7 @@ pub enum ErrorKind {
     InvalidFloatFormat(String),
     InvalidIntegerFormat(String),
     UnexpectedEndOfInput,
+    UnexpectedCharacter(char),
 }
 
 #[derive(Debug, Clone)]
@@ -67,9 +68,22 @@ impl<'a> Parser<'a> {
         self.skip_ws_and_comments();
         while !self.is_eof() {
             let key = self.parse_key();
-            self.skip_horizontal_ws();
 
-            // Colon is optional - consume it if present
+            // If we got an empty key, we hit an unexpected character
+            if key.is_empty() {
+                if let Some(b) = self.peek_byte() {
+                    let ch = b as char;
+                    self.errors.push(ParseError {
+                        line: self.line,
+                        column: self.column,
+                        kind: ErrorKind::UnexpectedCharacter(ch),
+                    });
+                }
+                self.synchronize();
+                continue;
+            }
+
+            // Colon is optional - but must be *immediately* after key (no whitespace)
             if self.peek_byte() == Some(b':') {
                 self.next_byte();
             }
@@ -114,9 +128,23 @@ impl<'a> Parser<'a> {
                 return map;
             }
             let key = self.parse_key();
-            self.skip_horizontal_ws();
 
-            // Colon is optional - consume it if present
+            // If we got an empty key, we hit an unexpected character
+            if key.is_empty() {
+                if let Some(b) = self.peek_byte() {
+                    let ch = b as char;
+                    self.errors.push(ParseError {
+                        line: self.line,
+                        column: self.column,
+                        kind: ErrorKind::UnexpectedCharacter(ch),
+                    });
+                }
+                self.synchronize();
+                continue;
+            }
+
+            // Code is repeated here for performance reasons
+            // Colon is optional - but must be *immediately* after key (no whitespace)
             if self.peek_byte() == Some(b':') {
                 self.next_byte();
             }
@@ -407,14 +435,13 @@ impl<'a> Parser<'a> {
                 let b = unsafe { *self.input.get_unchecked(self.pos) };
                 // Fast delimiter check
                 match b {
-                    b' ' | b'\t' | b'\n' | b'\r' | b'{' | b'}' | b'[' | b']' | b':' => break,
+                    b' ' | b'\t' | b'\n' | b'\r' | b'{' | b'}' | b'[' | b']' | b':' | b'(' | b')' => break,
                     _ => {
                         self.pos += 1;
                         self.column += 1;
                     }
                 }
             }
-            // SAFETY: start and pos are valid indices
             self.slice_to_str(start, self.pos).to_owned()
         }
     }
@@ -648,6 +675,19 @@ impl<'a> Parser<'a> {
     #[inline(always)]
     const fn is_eof(&self) -> bool {
         self.pos >= self.len
+    }
+
+    /// Synchronize after an error
+    /// Try to find a good place to resume, currently just advancing to the next newline or EOF.
+    fn synchronize(&mut self) {
+        while let Some(b) = self.peek_byte() {
+            if b == b'\n' {
+                self.next_byte();
+                break;
+            }
+            self.next_byte();
+        }
+        self.skip_ws_and_comments();
     }
 }
 

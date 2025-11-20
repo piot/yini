@@ -566,9 +566,9 @@ fn variants() {
 fn variants_with_payloads() {
     let data = r#"
             simple: :fullscreen
-            with_tuple: :windowed(768 1024)
-            with_single: :borderless(true)
-            with_object: :player{
+            with_tuple :windowed(768 1024)
+            with_single :borderless(true)
+            with_object :player{
                 name: "Alice"
                 hp: 100
             }
