@@ -435,7 +435,8 @@ impl<'a> Parser<'a> {
                 let b = unsafe { *self.input.get_unchecked(self.pos) };
                 // Fast delimiter check
                 match b {
-                    b' ' | b'\t' | b'\n' | b'\r' | b'{' | b'}' | b'[' | b']' | b':' | b'(' | b')' => break,
+                    b' ' | b'\t' | b'\n' | b'\r' | b'{' | b'}' | b'[' | b']' | b':' | b'('
+                    | b')' => break,
                     _ => {
                         self.pos += 1;
                         self.column += 1;
